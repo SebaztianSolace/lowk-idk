@@ -119,7 +119,7 @@
                     RAM (/str/)
                 </button>
                 <button onclick="switchTab('disk')" id="tab-disk" class="flex-1 py-2 text-[10px] font-bold text-center tab-inactive transition-colors">
-                    DISK (/files/)
+                    Config
                 </button>
             </div>
 
@@ -241,7 +241,7 @@
             jarData: null,
             currentTab: 'ram',
             filesRAM: [],
-            // Initial simulated files
+            // Initial simulated files - These will be written to /str/ on boot
             filesDISK: [
                 {name: 'eula.txt', content: 'eula=false', size: 10, type: 'text'},
                 {name: 'server.properties', content: 'server-port=25565\nonline-mode=false', size: 35, type: 'text'}
@@ -252,7 +252,7 @@
             systemState.currentTab = tab;
             document.getElementById('tab-ram').className = `flex-1 py-2 text-[10px] font-bold text-center transition-colors ${tab === 'ram' ? 'tab-active' : 'tab-inactive'}`;
             document.getElementById('tab-disk').className = `flex-1 py-2 text-[10px] font-bold text-center transition-colors ${tab === 'disk' ? 'tab-active' : 'tab-inactive'}`;
-            document.getElementById('fs-info').innerText = tab === 'ram' ? "Mode: Read-Only (RAM)" : "Mode: Read/Write (IndexedDB)";
+            document.getElementById('fs-info').innerText = tab === 'ram' ? "Mode: Read-Only (RAM)" : "Mode: Config (Write to RAM)";
             renderFileList();
         }
 
@@ -298,7 +298,7 @@
                 const title = document.getElementById('editor-title');
                 const textarea = document.getElementById('editor-content');
 
-                title.innerText = `Editing: /files/${file.name}`;
+                title.innerText = `Editing: ${file.name}`;
                 textarea.value = file.content || ""; // Load content from simulation
                 
                 modal.classList.remove('hidden');
@@ -319,22 +319,23 @@
             currentEditingFile.content = content; // Update memory state
             currentEditingFile.size = content.length;
             
-            // Perform actual write if FS API exists
-            const path = "/files/" + currentEditingFile.name;
+            // WRITE TO /str/ (RAM) - This is the fix requested
+            const fileName = currentEditingFile.name;
+            const path = "/str/" + fileName;
+            
+            // Try to write immediately if API is available (running)
+            // If not running, it will be written on boot.
             const writeFunc = typeof cheerpOSAddStringFile === 'function' ? cheerpOSAddStringFile : (typeof cheerpjAddStringFile === 'function' ? cheerpjAddStringFile : null);
             
             if (writeFunc) {
                 try {
                     writeFunc(path, content);
-                    // Also mirror to /str/ just in case
-                    try { writeFunc("/str/" + currentEditingFile.name, content); } catch(e){}
-                    
-                    window.sysLog(`System: Saved ${path} (${content.length} bytes).`);
+                    window.sysLog(`System: Saved ${fileName} to /str/ (RAM).`);
                 } catch(e) {
-                    window.sysLog("Error writing to FS: " + e.message);
+                    window.sysLog("Error writing to RAM: " + e.message);
                 }
             } else {
-                window.sysLog("Warning: FS API unavailable. Changes saved to UI state only.");
+                window.sysLog("Note: Saved to buffer. Will be written to RAM on boot.");
             }
             
             closeEditor();
@@ -342,11 +343,9 @@
         }
 
         function addConfigFile() {
-            // Helper to quickly create standard files
             const name = prompt("Enter filename (e.g. eula.txt):", "eula.txt");
             if (!name) return;
             
-            // Check if exists
             if (systemState.filesDISK.find(f => f.name === name)) {
                 window.sysLog("File already exists.");
                 return;
@@ -374,7 +373,6 @@
                 consoleDiv.scrollTop = consoleDiv.scrollHeight;
                 
                 e.target.value = '';
-                // Placeholder for stdin pipe
             }
         }
 
@@ -395,10 +393,11 @@
 
             if (!systemState.jvmLoaded) {
                 window.sysLog("Bios: Initializing CheerpJ 4.2 Engine...");
-                window.sysLog("Bios: Mounting /files/ as Working Directory...");
+                window.sysLog("Bios: Mounting /str/ as Working Directory...");
                 
                 try {
-                    await cheerpjInit({ javaProperties: ["user.dir=/files/"] });
+                    // CRITICAL CHANGE: Set user.dir to /str/ so the server sees the files we write to /str/
+                    await cheerpjInit({ javaProperties: ["user.dir=/str/"] });
                     systemState.jvmLoaded = true;
                 } catch (e) {
                     console.error("Bios Error: " + e.message);
@@ -484,17 +483,24 @@
             window.sysLog(`System: Writing JAR to ${vfsPath}...`);
 
             try {
+                // Compatibility shim for File Write function
                 const writeFunc = typeof cheerpOSAddStringFile === 'function' ? cheerpOSAddStringFile : (typeof cheerpjAddStringFile === 'function' ? cheerpjAddStringFile : null);
+                
                 if (writeFunc) {
+                    // 1. Write the Server JAR to /str/
                     writeFunc(vfsPath, systemState.jarData);
                     
-                    // Pre-write config files from DISK tab to actual VFS
-                    // This ensures any edits made in the editor are applied before run
+                    // 2. Write all CONFIG files (from the Config Tab) to /str/
+                    // This ensures the server sees eula.txt in the same directory it is running (user.dir=/str/)
                     systemState.filesDISK.forEach(f => {
                          if (f.content) {
-                             try { writeFunc("/files/" + f.name, f.content); } catch(e){}
-                             // also write to /str/ just in case
-                             try { writeFunc("/str/" + f.name, f.content); } catch(e){}
+                             const configPath = "/str/" + f.name;
+                             try { 
+                                 writeFunc(configPath, f.content); 
+                                 // log only if debug needed: window.sysLog(`Wrote ${configPath}`);
+                             } catch(e) {
+                                 window.sysLog(`Error writing config ${f.name}: ${e.message}`);
+                             }
                          }
                     });
 
@@ -522,28 +528,6 @@
             }
         }
         
-        // Force EULA helper for the button
-        window.forceWriteEula = function() {
-            window.sysLog("System: Checking eula.txt...");
-            // Find or create eula.txt in simulation
-            let eula = systemState.filesDISK.find(f => f.name === 'eula.txt');
-            if (!eula) {
-                eula = {name: 'eula.txt', content: 'eula=true', size: 9, type: 'text'};
-                systemState.filesDISK.push(eula);
-            } else {
-                eula.content = 'eula=true';
-            }
-            renderFileList();
-            
-            // Try actual write if API exists
-            const writeFunc = typeof cheerpOSAddStringFile === 'function' ? cheerpOSAddStringFile : (typeof cheerpjAddStringFile === 'function' ? cheerpjAddStringFile : null);
-            if (writeFunc) {
-                 try { writeFunc("/files/eula.txt", "eula=true"); } catch(e){}
-                 try { writeFunc("/str/eula.txt", "eula=true"); } catch(e){}
-            }
-            window.sysLog("System: Set eula=true.");
-        }
-
         renderFileList();
     </script>
 </body>
