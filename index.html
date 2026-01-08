@@ -76,7 +76,7 @@
             <div class="h-6 w-px bg-[#333]"></div>
             <div class="flex flex-col">
                 <div class="text-[10px] text-zinc-500">CPU: <span class="text-zinc-300">AUTO</span></div>
-                <div class="text-[10px] text-zinc-500">MEM: <span class="text-zinc-300">4GB (Max)</span></div>
+                <div class="text-[10px] text-zinc-500">FS: <span class="text-blue-400">/files/ (Persistent)</span></div>
             </div>
         </div>
 
@@ -116,10 +116,10 @@
             <!-- Tabs -->
             <div class="flex border-b border-[#333]">
                 <button onclick="switchTab('ram')" id="tab-ram" class="flex-1 py-2 text-[10px] font-bold text-center tab-active transition-colors">
-                    RAM (/str/)
+                    JAR (Upload)
                 </button>
                 <button onclick="switchTab('disk')" id="tab-disk" class="flex-1 py-2 text-[10px] font-bold text-center tab-inactive transition-colors">
-                    Config
+                    Config (/files/)
                 </button>
             </div>
 
@@ -140,7 +140,7 @@
             
             <!-- Disk Info Footer -->
             <div class="p-2 border-t border-[#333] bg-[#050505] text-[10px] text-zinc-600">
-                <div id="fs-info">Mode: Read-Only (RAM)</div>
+                <div id="fs-info">RAM: Executable Storage</div>
             </div>
         </div>
 
@@ -159,7 +159,9 @@
             <div id="console" class="flex-1 pt-2 border-t border-[#333] font-mono">
                 <div class="px-4 py-2 text-zinc-500 text-xs select-text">
                     [System] Java Runtime Environment Ready.<br>
-                    [System] Upload a .jar to RAM (/str/) to begin.<br>
+                    [System] 1. Upload .jar to RAM.<br>
+                    [System] 2. Edit Configs (eula.txt) in Config tab.<br>
+                    [System] 3. Click RUN to boot into /files/ (Persistent Mode).<br>
                 </div>
             </div>
 
@@ -179,7 +181,7 @@
                     <textarea id="editor-content" class="flex-1 bg-[#0f0f0f] text-zinc-300 p-4 font-mono text-xs resize-none focus:outline-none" spellcheck="false"></textarea>
                     <div class="h-12 border-t border-[#333] flex items-center justify-end px-4 gap-2 bg-[#222] rounded-b-lg">
                         <button onclick="closeEditor()" class="px-3 py-1.5 text-xs text-zinc-400 hover:text-white">Cancel</button>
-                        <button onclick="saveEditorContent()" class="px-4 py-1.5 bg-blue-600 hover:bg-blue-500 text-white text-xs font-bold rounded">Save Changes</button>
+                        <button onclick="saveEditorContent()" class="px-4 py-1.5 bg-blue-600 hover:bg-blue-500 text-white text-xs font-bold rounded">Save (Queue)</button>
                     </div>
                 </div>
             </div>
@@ -193,42 +195,23 @@
             const originalLog = console.log;
             const originalErr = console.error;
             const originalWarn = console.warn;
-            
             const consoleDiv = document.getElementById('console');
 
             function printToUI(msg, type) {
                 const line = document.createElement('div');
                 line.className = `log-line log-${type}`;
                 const time = new Date().toLocaleTimeString('en-GB', { hour12: false });
-                
                 let text = msg;
-                if (typeof msg === 'object') {
-                    try { text = JSON.stringify(msg); } catch(e) { text = '[Object]'; }
-                }
-
+                if (typeof msg === 'object') { try { text = JSON.stringify(msg); } catch(e) { text = '[Object]'; } }
                 line.innerHTML = `<span class="opacity-30 mr-2 select-none">[${time}]</span>${text}`;
                 consoleDiv.appendChild(line);
                 consoleDiv.scrollTop = consoleDiv.scrollHeight;
             }
 
-            console.log = function(...args) {
-                originalLog.apply(console, args);
-                printToUI(args.join(' '), 'stdout');
-            };
-
-            console.error = function(...args) {
-                originalErr.apply(console, args);
-                printToUI(args.join(' '), 'stderr');
-            };
-
-            console.warn = function(...args) {
-                originalWarn.apply(console, args);
-                printToUI(args.join(' '), 'warn');
-            };
-
-            window.sysLog = function(msg) {
-                printToUI(msg, 'sys');
-            }
+            console.log = function(...args) { originalLog.apply(console, args); printToUI(args.join(' '), 'stdout'); };
+            console.error = function(...args) { originalErr.apply(console, args); printToUI(args.join(' '), 'stderr'); };
+            console.warn = function(...args) { originalWarn.apply(console, args); printToUI(args.join(' '), 'warn'); };
+            window.sysLog = function(msg) { printToUI(msg, 'sys'); }
         })();
 
         // --- 2. STATE & UI ---
@@ -241,9 +224,9 @@
             jarData: null,
             currentTab: 'ram',
             filesRAM: [],
-            // Initial simulated files - These will be written to /str/ on boot
+            // These files will be written to /files/ AFTER init
             filesDISK: [
-                {name: 'eula.txt', content: 'eula=false', size: 10, type: 'text'},
+                {name: 'eula.txt', content: 'eula=true', size: 9, type: 'text'},
                 {name: 'server.properties', content: 'server-port=25565\nonline-mode=false', size: 35, type: 'text'}
             ] 
         };
@@ -252,7 +235,7 @@
             systemState.currentTab = tab;
             document.getElementById('tab-ram').className = `flex-1 py-2 text-[10px] font-bold text-center transition-colors ${tab === 'ram' ? 'tab-active' : 'tab-inactive'}`;
             document.getElementById('tab-disk').className = `flex-1 py-2 text-[10px] font-bold text-center transition-colors ${tab === 'disk' ? 'tab-active' : 'tab-inactive'}`;
-            document.getElementById('fs-info').innerText = tab === 'ram' ? "Mode: Read-Only (RAM)" : "Mode: Config (Write to RAM)";
+            document.getElementById('fs-info').innerText = tab === 'ram' ? "RAM: Executable Storage" : "DISK: Persistent Config Queue";
             renderFileList();
         }
 
@@ -269,9 +252,7 @@
             files.forEach(f => {
                 const el = document.createElement('div');
                 el.className = "flex items-center gap-2 text-xs p-1.5 hover:bg-[#222] rounded cursor-pointer group select-none";
-                // Onclick open editor if it's text
                 el.onclick = () => openEditor(f);
-                
                 el.innerHTML = `
                     <i data-lucide="${f.name.endsWith('.jar') ? 'file-code' : 'file-text'}" class="w-3 h-3 text-zinc-500"></i>
                     <span class="text-zinc-300 flex-1 truncate">${f.name}</span>
@@ -290,20 +271,14 @@
                 window.sysLog("Cannot edit binary JAR files.");
                 return;
             }
-
-            // Simple heuristic for editable files
             if (file.name.endsWith('.txt') || file.name.endsWith('.properties') || file.name.endsWith('.json') || file.name.endsWith('.yml')) {
                 currentEditingFile = file;
                 const modal = document.getElementById('editor-overlay');
-                const title = document.getElementById('editor-title');
-                const textarea = document.getElementById('editor-content');
-
-                title.innerText = `Editing: ${file.name}`;
-                textarea.value = file.content || ""; // Load content from simulation
-                
+                document.getElementById('editor-title').innerText = `Editing: ${file.name}`;
+                document.getElementById('editor-content').value = file.content || "";
                 modal.classList.remove('hidden');
             } else {
-                window.sysLog(`Cannot edit ${file.name} (Unknown format or Binary).`);
+                window.sysLog(`Cannot edit ${file.name}.`);
             }
         }
 
@@ -314,43 +289,35 @@
 
         function saveEditorContent() {
             if (!currentEditingFile) return;
-            
             const content = document.getElementById('editor-content').value;
-            currentEditingFile.content = content; // Update memory state
+            currentEditingFile.content = content;
             currentEditingFile.size = content.length;
             
-            // WRITE TO /str/ (RAM) - This is the fix requested
-            const fileName = currentEditingFile.name;
-            const path = "/str/" + fileName;
-            
-            // Try to write immediately if API is available (running)
-            // If not running, it will be written on boot.
-            const writeFunc = typeof cheerpOSAddStringFile === 'function' ? cheerpOSAddStringFile : (typeof cheerpjAddStringFile === 'function' ? cheerpjAddStringFile : null);
-            
-            if (writeFunc) {
-                try {
-                    writeFunc(path, content);
-                    window.sysLog(`System: Saved ${fileName} to /str/ (RAM).`);
-                } catch(e) {
-                    window.sysLog("Error writing to RAM: " + e.message);
+            // IF JVM is already online, write immediately.
+            // IF JVM is offline, just save to array (Queue) and it will write on boot.
+            if (systemState.jvmLoaded) {
+                const path = "/files/" + currentEditingFile.name;
+                const writeFunc = typeof cheerpOSAddStringFile === 'function' ? cheerpOSAddStringFile : null;
+                if (writeFunc) {
+                    try {
+                        writeFunc(path, content);
+                        window.sysLog(`System: Hot-swapped ${path} (Saved to DISK).`);
+                    } catch(e) { window.sysLog("Write Error: " + e.message); }
                 }
             } else {
-                window.sysLog("Note: Saved to buffer. Will be written to RAM on boot.");
+                window.sysLog(`System: Queued ${currentEditingFile.name} for write on Boot.`);
             }
             
             closeEditor();
-            renderFileList(); // Update size display
+            renderFileList();
         }
 
         function addConfigFile() {
             const name = prompt("Enter filename (e.g. eula.txt):", "eula.txt");
             if (!name) return;
-            
             if (systemState.filesDISK.find(f => f.name === name)) {
-                window.sysLog("File already exists.");
-                return;
+                window.sysLog("File already exists."); return;
             }
-            
             const newFile = {name: name, content: "", size: 0, type: 'text'};
             systemState.filesDISK.push(newFile);
             renderFileList();
@@ -363,15 +330,12 @@
             if (e.key === 'Enter') {
                 const input = e.target.value;
                 if (!input.trim()) return;
-                
-                // Show command in log immediately
                 const consoleDiv = document.getElementById('console');
                 const line = document.createElement('div');
                 line.className = `log-line log-input`;
                 line.innerText = `> ${input}`;
                 consoleDiv.appendChild(line);
                 consoleDiv.scrollTop = consoleDiv.scrollHeight;
-                
                 e.target.value = '';
             }
         }
@@ -391,19 +355,39 @@
             document.getElementById('status-text').innerText = "BOOTING";
             document.getElementById('status-text').className = "text-xs font-bold text-yellow-500";
 
+            // 1. INITIALIZE JVM (Mounts /files/)
             if (!systemState.jvmLoaded) {
                 window.sysLog("Bios: Initializing CheerpJ 4.2 Engine...");
-                window.sysLog("Bios: Mounting /str/ as Working Directory...");
+                window.sysLog("Bios: Mounting /files/ as Working Directory (Persistent)...");
                 
                 try {
-                    // CRITICAL CHANGE: Set user.dir to /str/ so the server sees the files we write to /str/
-                    await cheerpjInit({ javaProperties: ["user.dir=/str/"] });
+                    // Set working directory to /files/ so server writes logs/worlds there
+                    await cheerpjInit({ javaProperties: ["user.dir=/files/"] });
                     systemState.jvmLoaded = true;
                 } catch (e) {
                     console.error("Bios Error: " + e.message);
                     stopSystem(false);
                     return;
                 }
+            }
+
+            // 2. FLUSH CONFIG QUEUE TO DISK
+            window.sysLog("Bios: Flushing config files to /files/...");
+            const writeFunc = typeof cheerpOSAddStringFile === 'function' ? cheerpOSAddStringFile : (typeof cheerpjAddStringFile === 'function' ? cheerpjAddStringFile : null);
+            
+            if (writeFunc) {
+                systemState.filesDISK.forEach(f => {
+                    if (f.content) {
+                        try {
+                            // THIS IS THE FIX: We write to /files/ AFTER init
+                            writeFunc("/files/" + f.name, f.content);
+                            // Also write to /str/ just in case server checks there
+                            try { writeFunc("/str/" + f.name, f.content); } catch(e){}
+                        } catch(e) {
+                            window.sysLog(`Failed to write ${f.name}: ${e.message}`);
+                        }
+                    }
+                });
             }
 
             document.getElementById('led').className = "w-3 h-3 rounded-full bg-emerald-500 shadow-[0_0_8px_#10b981]";
@@ -417,9 +401,7 @@
 
         function stopSystem(reload = true) {
             if (reload) {
-                if(confirm("Stopping the JVM requires a page reload. Continue?")) {
-                    window.location.reload();
-                }
+                if(confirm("Stopping the JVM requires a page reload. Continue?")) window.location.reload();
             } else {
                 systemState.power = false;
                 updateControls(false);
@@ -430,9 +412,7 @@
         }
 
         function restartSystem() {
-            if(confirm("Restarting will reload the page to clear JVM memory. Continue?")) {
-                window.location.reload();
-            }
+            if(confirm("Restarting will reload the page. Continue?")) window.location.reload();
         }
 
         function updateControls(isRunning) {
@@ -442,7 +422,6 @@
             runBtn.disabled = isRunning;
             stopBtn.disabled = !isRunning;
             restartBtn.disabled = !isRunning;
-            
             if (isRunning) {
                 runBtn.classList.add('opacity-50', 'cursor-not-allowed');
                 stopBtn.classList.remove('opacity-50', 'cursor-not-allowed');
@@ -463,7 +442,7 @@
                     systemState.jarName = file.name;
                     systemState.filesRAM.push({ name: file.name, size: file.size });
                     renderFileList();
-                    window.sysLog(`System: ${file.name} loaded into RAM buffer.`);
+                    window.sysLog(`System: ${file.name} buffered in memory.`);
                 } catch(err) {
                     console.error("Read Error: " + err.message);
                 }
@@ -478,32 +457,15 @@
 
             const rawArgs = document.getElementById('boot-args').value;
             const args = rawArgs.split(' ').filter(a => a.length > 0);
-            const vfsPath = "/str/" + systemState.jarName;
             
-            window.sysLog(`System: Writing JAR to ${vfsPath}...`);
+            // Write JAR to RAM (/str/) for execution
+            const vfsPath = "/str/" + systemState.jarName;
+            window.sysLog(`System: Mounting Executable to ${vfsPath}...`);
 
             try {
-                // Compatibility shim for File Write function
                 const writeFunc = typeof cheerpOSAddStringFile === 'function' ? cheerpOSAddStringFile : (typeof cheerpjAddStringFile === 'function' ? cheerpjAddStringFile : null);
-                
                 if (writeFunc) {
-                    // 1. Write the Server JAR to /str/
                     writeFunc(vfsPath, systemState.jarData);
-                    
-                    // 2. Write all CONFIG files (from the Config Tab) to /str/
-                    // This ensures the server sees eula.txt in the same directory it is running (user.dir=/str/)
-                    systemState.filesDISK.forEach(f => {
-                         if (f.content) {
-                             const configPath = "/str/" + f.name;
-                             try { 
-                                 writeFunc(configPath, f.content); 
-                                 // log only if debug needed: window.sysLog(`Wrote ${configPath}`);
-                             } catch(e) {
-                                 window.sysLog(`Error writing config ${f.name}: ${e.message}`);
-                             }
-                         }
-                    });
-
                 } else {
                     throw new Error("Filesystem API missing");
                 }
@@ -522,9 +484,6 @@
 
             } catch (e) {
                 console.error(`Runtime Exception: ${e.message}`);
-                if(e.message.includes('pwrite')) {
-                    window.sysLog("Tip: Use Vanilla/Spigot JARs instead of PaperMC to avoid pwrite errors.");
-                }
             }
         }
         
