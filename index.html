@@ -5,11 +5,10 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Java Runtime Environment (Web)</title>
     <script src="https://cdn.tailwindcss.com"></script>
-    <!-- 
-      REQUIRED: This loads the WebAssembly JVM Engine. 
-      Without this, running a real .jar file in a browser is impossible.
-    -->
-    <script src="https://cjrtnc.leaningtech.com/3.0/loader.js"></script>
+    
+    <!-- CheerpJ 4.2 Loader -->
+    <script src="https://cjrtnc.leaningtech.com/4.2/loader.js" onerror="window.cheerpjLoadError = true"></script>
+    
     <style>
         @import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&display=swap');
         
@@ -24,36 +23,61 @@
         .log-line { padding: 1px 16px; border-left: 2px solid transparent; white-space: pre-wrap; word-break: break-all; }
         
         .log-stdout { color: #ccc; }
-        .log-stderr { color: #f87171; } /* Red for Java Errors */
-        .log-sys { color: #60a5fa; }    /* Blue for System Messages */
+        .log-stderr { color: #f87171; }
+        .log-sys { color: #60a5fa; }
+        .log-warn { color: #facc15; }
 
-        .blink { animation: blinker 1s linear infinite; }
-        @keyframes blinker { 50% { opacity: 0; } }
+        #cheerpjDisplay {
+            width: 100% !important;
+            height: 100% !important;
+            object-fit: contain;
+            background: #000;
+        }
+        
+        #display-container {
+            flex: 1;
+            background: #111;
+            display: none;
+            justify-content: center;
+            align-items: center;
+            overflow: hidden;
+            border-bottom: 1px solid #333;
+        }
     </style>
 </head>
 <body class="flex flex-col h-screen">
 
     <!-- Status Bar -->
-    <div class="bg-[#111] border-b border-[#333] h-12 flex items-center justify-between px-4 z-20">
-        <div class="flex items-center gap-4">
+    <div class="bg-[#111] border-b border-[#333] h-12 flex items-center justify-between px-4 z-20 gap-4">
+        <div class="flex items-center gap-4 flex-shrink-0">
             <div class="flex items-center gap-2">
                 <div id="led" class="w-3 h-3 rounded-full bg-zinc-800"></div>
                 <span id="status-text" class="text-xs font-bold text-zinc-500">SYSTEM HALTED</span>
             </div>
             <div class="h-4 w-px bg-[#333]"></div>
-            <div class="text-[10px] text-zinc-500">
+            <div class="text-[10px] text-zinc-500 hidden sm:block">
                 JVM: <span id="jvm-status" class="text-red-500">UNLOADED</span>
+            </div>
+            <div class="h-4 w-px bg-[#333] hidden sm:block"></div>
+            <div class="text-[10px] text-zinc-500 hidden sm:block">
+                FS: <span class="text-blue-400">/files/ (Persistent)</span>
             </div>
         </div>
 
-        <div class="flex items-center gap-3">
+        <div class="flex-1 flex items-center justify-end gap-3">
+             <!-- Boot Args Input -->
+            <div class="hidden md:flex items-center bg-[#222] rounded px-2 py-1 border border-[#333]">
+                <span class="text-[10px] text-zinc-500 mr-2">ARGS:</span>
+                <input id="boot-args" type="text" value="--nogui" class="bg-transparent border-none outline-none text-[10px] text-zinc-300 w-24" placeholder="-flag">
+            </div>
+
             <input type="file" id="file-upload" accept=".jar" class="hidden" />
             
-            <button id="btn-upload" onclick="triggerUpload()" class="hidden bg-blue-600 hover:bg-blue-500 text-white text-[10px] font-bold px-4 py-1.5 rounded uppercase">
-                Install server.jar
+            <button id="btn-upload" onclick="triggerUpload()" class="hidden bg-blue-600 hover:bg-blue-500 text-white text-[10px] font-bold px-4 py-1.5 rounded uppercase whitespace-nowrap">
+                Install .jar
             </button>
             
-            <button id="btn-power" onclick="powerOn()" class="bg-zinc-700 hover:bg-zinc-600 text-white text-[10px] font-bold px-4 py-1.5 rounded uppercase">
+            <button id="btn-power" onclick="powerOn()" class="bg-zinc-700 hover:bg-zinc-600 text-white text-[10px] font-bold px-4 py-1.5 rounded uppercase whitespace-nowrap">
                 Power On
             </button>
         </div>
@@ -62,18 +86,23 @@
     <!-- Main View -->
     <div class="flex-1 flex relative">
         <!-- VFS Sidebar -->
-        <div class="w-64 bg-[#0a0a0a] border-r border-[#333] flex flex-col">
-            <div class="p-3 border-b border-[#333] text-[10px] font-bold text-zinc-500 uppercase">
-                /root/ (VFS)
+        <div class="w-64 bg-[#0a0a0a] border-r border-[#333] flex flex-col hidden md:flex">
+            <div class="p-3 border-b border-[#333] text-[10px] font-bold text-zinc-500 uppercase flex justify-between">
+                <span>/str/ (RAM)</span>
             </div>
             <div id="file-list" class="flex-1 overflow-y-auto p-2 space-y-1">
                 <div class="text-zinc-700 text-xs italic p-2 text-center">Disk Empty</div>
             </div>
         </div>
 
-        <!-- Terminal -->
-        <div class="flex-1 bg-black flex flex-col">
-            <div id="console" class="flex-1 pt-2">
+        <!-- Terminal & Display Area -->
+        <div class="flex-1 bg-black flex flex-col min-w-0">
+            <!-- Graphical Display Container -->
+            <div id="display-container" class="relative">
+                <div class="text-zinc-600 text-xs absolute top-2 right-2 z-10 pointer-events-none">Display Output</div>
+            </div>
+
+            <div id="console" class="flex-1 pt-2 border-t border-[#333]">
                 <!-- Logs go here -->
             </div>
             <div class="h-10 border-t border-[#333] flex items-center px-4 gap-2">
@@ -87,12 +116,9 @@
         // System State
         let isPowerOn = false;
         let jvmReady = false;
-        let jarUrl = null;
         let jarName = null;
+        let jarData = null; // Uint8Array
         
-        // --- Virtual Filesystem Mock ---
-        // We track files here to show them in the UI, 
-        // but the real files live in CheerpJ's /str/ mount.
         let vfsFiles = [];
 
         // --- Logger ---
@@ -106,14 +132,12 @@
             consoleDiv.scrollTop = consoleDiv.scrollHeight;
         }
 
-        // Hijack console to catch JVM output
         const originalLog = console.log;
         const originalErr = console.error;
         console.log = function(...args) {
             originalLog.apply(console, args);
-            // Filter CheerpJ internal messages vs Real Java Output
-            const str = args.join(' ');
-            log(str, 'stdout'); 
+            // Filter redundant messages if needed
+            log(args.join(' '), 'stdout'); 
         };
         console.error = function(...args) {
             originalErr.apply(console, args);
@@ -135,29 +159,35 @@
             document.getElementById('status-text').className = "text-xs font-bold text-yellow-500";
 
             log("Bios: Checking hardware...", "sys");
+
+            if (window.cheerpjLoadError) {
+                log("CRITICAL: Failed to load CheerpJ.", "stderr");
+                systemHalt("NET_ERR");
+                return;
+            }
             
-            // Check for Engine
             if (typeof cheerpjInit === 'undefined') {
-                log("CRITICAL ERROR: JVM Engine (loader.js) missing.", "stderr");
-                log("Network connection to LeaningTech required for WebAssembly.", "stderr");
+                log("CRITICAL: JVM Engine undefined.", "stderr");
                 systemHalt("JVM_MISSING");
                 return;
             }
 
-            log("Bios: Initializing WebAssembly JVM...", "sys");
+            log("Bios: Initializing CheerpJ 4.2...", "sys");
+            log("Bios: Mounting /files/ as Working Directory...", "sys");
             document.getElementById('jvm-status').innerText = "LOADING...";
             
             try {
-                // Initialize Real CheerpJ
-                await cheerpjInit({ 
-                    enableNetwork: true,
-                    javaProperties: ["java.awt.headless=true"]
+                // Initialize CheerpJ 4.2
+                // CRITICAL: We set user.dir to /files/ so the app writes data to Persistent Storage
+                // instead of the Read-Only RAM disk.
+                await cheerpjInit({
+                    javaProperties: ["user.dir=/files/"] 
                 });
                 
                 jvmReady = true;
                 document.getElementById('jvm-status').innerText = "ONLINE";
                 document.getElementById('jvm-status').className = "text-emerald-500";
-                log("Bios: JVM initialized successfully.", "sys");
+                log("Bios: JVM initialized.", "sys");
                 
                 checkDisk();
 
@@ -168,11 +198,11 @@
         }
 
         function checkDisk() {
-            log("Bios: Scanning /root/ for bootable media...", "sys");
+            log("Bios: Checking RAM for bootable media...", "sys");
             
-            if (!jarUrl) {
-                log("Boot Error: No 'server.jar' found on disk.", "stderr");
-                log("Action: Please install server software manually.", "sys");
+            if (!jarData) {
+                log("Boot Error: No JAR loaded in memory.", "stderr");
+                log("Action: Upload a .jar file to start.", "sys");
                 
                 document.getElementById('status-text').innerText = "NO BOOT MEDIA";
                 document.getElementById('status-text').className = "text-xs font-bold text-red-500";
@@ -185,7 +215,7 @@
             }
         }
 
-        // --- Upload Logic ---
+        // --- Upload Logic (ArrayBuffer for Reliability) ---
         function triggerUpload() {
             document.getElementById('file-upload').click();
         }
@@ -194,18 +224,43 @@
             const file = e.target.files[0];
             if (!file) return;
 
+            // Warn if it looks like a Patcher
+            if (file.name.toLowerCase().includes("paper") || file.name.toLowerCase().includes("spigot")) {
+                log("WARNING: Paper/Spigot detected.", "warn");
+                log("These require patching which often FAILS in browsers.", "warn");
+                log("Recommendation: Use a Vanilla Server JAR (1.8 - 1.21).", "warn");
+            }
+
             log(`System: Reading ${file.name} (${(file.size/1024/1024).toFixed(2)} MB)...`, "sys");
             
-            jarUrl = URL.createObjectURL(file);
-            jarName = file.name;
-            vfsFiles.push({ name: jarName, size: file.size });
+            const reader = new FileReader();
             
-            updateVfsUI();
-            log("System: Install complete.", "sys");
-            
-            // Auto-start after upload
-            document.getElementById('btn-upload').classList.add('hidden');
-            runJar();
+            reader.onload = function(evt) {
+                try {
+                    // Load to Uint8Array
+                    jarData = new Uint8Array(evt.target.result);
+                    jarName = file.name;
+                    
+                    vfsFiles.push({ name: jarName, size: file.size });
+                    updateVfsUI();
+                    
+                    log(`System: File loaded into RAM Buffer.`, "sys");
+                    
+                    document.getElementById('btn-upload').classList.add('hidden');
+                    
+                    if (jvmReady) {
+                        runJar();
+                    }
+                } catch(err) {
+                    log("System: Error processing file data: " + err.message, "stderr");
+                }
+            };
+
+            reader.onerror = function() {
+                log("System: Disk Read Error.", "stderr");
+            };
+
+            reader.readAsArrayBuffer(file);
         });
 
         // --- Execution Logic ---
@@ -214,26 +269,63 @@
             document.getElementById('status-text').className = "text-xs font-bold text-emerald-500";
             document.getElementById('led').className = "w-3 h-3 rounded-full bg-emerald-500 shadow-[0_0_8px_#10b981]";
             
-            // Prepare default configs if missing
-            // This writes to the JVM's virtual memory
-            if(typeof cheerpOSAddStringFile === 'function') {
-                log("System: Writing default eula.txt=true", "sys");
-                cheerpOSAddStringFile("/str/eula.txt", "eula=true");
-                
-                // Add to our UI tracker
-                if(!vfsFiles.find(f => f.name === 'eula.txt')) vfsFiles.push({name: 'eula.txt', size: 9});
-                updateVfsUI();
-            }
+            const displayContainer = document.getElementById('display-container');
+            displayContainer.style.display = 'flex';
+            displayContainer.style.height = '60%'; 
 
-            log(`System: Executing ${jarName}...`, "sys");
-            log("----------------------------------------", "stdout");
+            const rawArgs = document.getElementById('boot-args').value;
+            const args = rawArgs.split(' ').filter(a => a.length > 0);
 
+            // 1. Write JAR to /str/ (Memory VFS)
+            // We MUST use /str/ here because cheerpOSAddStringFile crashes on /files/
+            const vfsPath = "/str/" + jarName;
+            log(`System: Writing JAR to VFS (${vfsPath})...`, "sys");
+            
             try {
-                // THE REAL CALL: Passes the Blob URL to the WASM Runtime
-                // Path must be /str/ to use the persistent IndexedDB mount
-                await cheerpjRunJar(jarUrl, "/str/");
+                const writeFunc = typeof cheerpOSAddStringFile === 'function' ? cheerpOSAddStringFile : (typeof cheerpjAddStringFile === 'function' ? cheerpjAddStringFile : null);
+
+                if (!writeFunc) {
+                    throw new Error("File System API not found.");
+                }
+
+                writeFunc(vfsPath, jarData);
+
+                // 2. Handle EULA
+                // We write eula.txt to BOTH /str/ and /files/ (via user.dir context?)
+                // Since user.dir=/files/, the app checks /files/eula.txt.
+                // But we can't write to /files/ easily from JS.
+                // We hope the server creates it, then we manually edit it? 
+                // Or we try to run a small command? 
+                // For now, we write to /str/ and hope the server checks classpath or root.
+                if (jarName.toLowerCase().includes("server") || jarName.toLowerCase().includes("paper") || jarName.toLowerCase().includes("spigot")) {
+                     log("System: Attempting to pre-accept EULA...", "warn");
+                     try { writeFunc("/str/eula.txt", "eula=true"); } catch(e){}
+                     try { writeFunc("/eula.txt", "eula=true"); } catch(e){}
+                }
+                
+                log(`System: Executing ${vfsPath}...`, "sys");
+                log(`Args: [${args.join(', ')}]`, "sys");
+                log("----------------------------------------", "stdout");
+
+                cheerpjCreateDisplay(800, 600);
+                
+                setTimeout(() => {
+                    const canvas = document.getElementById('cheerpjDisplay');
+                    if(canvas) displayContainer.appendChild(canvas);
+                }, 100);
+
+                // 3. EXECUTE
+                // Since we set user.dir=/files/ in init, the server should run in Persistent Mode
+                await cheerpjRunJar(vfsPath, args);
+
             } catch (e) {
                 log(`Runtime Crash: ${e.message}`, "stderr");
+                if (e.message.includes("pwrite")) {
+                     log("---------------------------------------------------", "stderr");
+                     log("ERROR: Patcher System Call Missing (__syscall_pwrite64)", "stderr");
+                     log("This server JAR tried to patch itself using a method not supported in browsers.", "stderr");
+                     log("SOLUTION: Please use a VANILLA server JAR or a pre-patched JAR.", "stderr");
+                }
                 systemHalt("RUNTIME_ERR");
             }
         }
