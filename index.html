@@ -52,6 +52,12 @@
         .tab-inactive { color: #666; cursor: pointer; }
         .tab-inactive:hover { color: #ccc; background-color: #151515; }
         
+        /* Editor Modal */
+        #editor-overlay {
+            background: rgba(0,0,0,0.8);
+            backdrop-filter: blur(4px);
+        }
+        
         .blink { animation: blinker 1s linear infinite; }
         @keyframes blinker { 50% { opacity: 0; } }
     </style>
@@ -122,8 +128,8 @@
                 <button onclick="triggerUpload()" class="flex-1 bg-blue-600/20 hover:bg-blue-600/40 text-blue-400 text-[10px] py-1 rounded border border-blue-600/30 font-bold">
                     + Upload JAR
                 </button>
-                <button onclick="forceWriteEula()" class="flex-1 bg-yellow-600/20 hover:bg-yellow-600/40 text-yellow-400 text-[10px] py-1 rounded border border-yellow-600/30 font-bold" title="Write EULA=TRUE to all paths">
-                    ! Accept EULA
+                <button onclick="addConfigFile()" class="flex-1 bg-zinc-700/20 hover:bg-zinc-700/40 text-zinc-400 text-[10px] py-1 rounded border border-zinc-600/30 font-bold" title="Create eula.txt / server.properties">
+                    + Config
                 </button>
             </div>
 
@@ -139,7 +145,7 @@
         </div>
 
         <!-- Main Content: Display & Terminal -->
-        <div class="flex-1 bg-black flex flex-col min-w-0">
+        <div class="flex-1 bg-black flex flex-col min-w-0 relative">
             
             <!-- GUI Display (Hidden by default) -->
             <div id="display-container" class="relative">
@@ -162,12 +168,27 @@
                 <span class="text-emerald-500 font-bold">></span>
                 <input id="term-input" type="text" class="bg-transparent border-none outline-none flex-1 text-sm text-zinc-300 font-mono" placeholder="Command input..." disabled onkeydown="handleInput(event)">
             </div>
+
+            <!-- FILE EDITOR MODAL -->
+            <div id="editor-overlay" class="absolute inset-0 z-50 hidden flex items-center justify-center p-4">
+                <div class="bg-[#1a1a1a] w-full max-w-2xl h-[80%] rounded-lg border border-[#333] shadow-2xl flex flex-col">
+                    <div class="h-10 border-b border-[#333] flex items-center justify-between px-4 bg-[#222] rounded-t-lg">
+                        <span id="editor-title" class="text-xs font-bold text-zinc-300">Editing: file.txt</span>
+                        <button onclick="closeEditor()" class="text-zinc-500 hover:text-white"><i data-lucide="x" class="w-4 h-4"></i></button>
+                    </div>
+                    <textarea id="editor-content" class="flex-1 bg-[#0f0f0f] text-zinc-300 p-4 font-mono text-xs resize-none focus:outline-none" spellcheck="false"></textarea>
+                    <div class="h-12 border-t border-[#333] flex items-center justify-end px-4 gap-2 bg-[#222] rounded-b-lg">
+                        <button onclick="closeEditor()" class="px-3 py-1.5 text-xs text-zinc-400 hover:text-white">Cancel</button>
+                        <button onclick="saveEditorContent()" class="px-4 py-1.5 bg-blue-600 hover:bg-blue-500 text-white text-xs font-bold rounded">Save Changes</button>
+                    </div>
+                </div>
+            </div>
+
         </div>
     </div>
 
     <script>
-        // --- 1. CONSOLE PROXY (Capture Logic) ---
-        // This ensures we catch CheerpJ logs without breaking the browser console.
+        // --- 1. CONSOLE PROXY (Safe Logging) ---
         (function() {
             const originalLog = console.log;
             const originalErr = console.error;
@@ -175,13 +196,11 @@
             
             const consoleDiv = document.getElementById('console');
 
-            // Internal helper to print to our UI
             function printToUI(msg, type) {
                 const line = document.createElement('div');
                 line.className = `log-line log-${type}`;
                 const time = new Date().toLocaleTimeString('en-GB', { hour12: false });
                 
-                // Convert objects to strings if needed
                 let text = msg;
                 if (typeof msg === 'object') {
                     try { text = JSON.stringify(msg); } catch(e) { text = '[Object]'; }
@@ -192,27 +211,21 @@
                 consoleDiv.scrollTop = consoleDiv.scrollHeight;
             }
 
-            // Override Log
             console.log = function(...args) {
-                // 1. Send to real browser console (Don't override functionality)
                 originalLog.apply(console, args);
-                // 2. Send to our UI
                 printToUI(args.join(' '), 'stdout');
             };
 
-            // Override Error
             console.error = function(...args) {
                 originalErr.apply(console, args);
                 printToUI(args.join(' '), 'stderr');
             };
 
-            // Override Warn
             console.warn = function(...args) {
                 originalWarn.apply(console, args);
                 printToUI(args.join(' '), 'warn');
             };
 
-            // Expose a safe system logger for our own scripts
             window.sysLog = function(msg) {
                 printToUI(msg, 'sys');
             }
@@ -225,28 +238,27 @@
             power: false,
             jvmLoaded: false,
             jarName: null,
-            jarData: null, // Uint8Array
+            jarData: null,
             currentTab: 'ram',
             filesRAM: [],
-            filesDISK: [{name: 'eula.txt', size: 0}] // Simulation of persistent file
+            // Initial simulated files
+            filesDISK: [
+                {name: 'eula.txt', content: 'eula=false', size: 10, type: 'text'},
+                {name: 'server.properties', content: 'server-port=25565\nonline-mode=false', size: 35, type: 'text'}
+            ] 
         };
         
         function switchTab(tab) {
             systemState.currentTab = tab;
-            
             document.getElementById('tab-ram').className = `flex-1 py-2 text-[10px] font-bold text-center transition-colors ${tab === 'ram' ? 'tab-active' : 'tab-inactive'}`;
             document.getElementById('tab-disk').className = `flex-1 py-2 text-[10px] font-bold text-center transition-colors ${tab === 'disk' ? 'tab-active' : 'tab-inactive'}`;
-            
-            const footer = document.getElementById('fs-info');
-            footer.innerText = tab === 'ram' ? "Mode: Read-Only (RAM)" : "Mode: Read/Write (IndexedDB)";
-            
+            document.getElementById('fs-info').innerText = tab === 'ram' ? "Mode: Read-Only (RAM)" : "Mode: Read/Write (IndexedDB)";
             renderFileList();
         }
 
         function renderFileList() {
             const container = document.getElementById('file-list-container');
             container.innerHTML = '';
-
             const files = systemState.currentTab === 'ram' ? systemState.filesRAM : systemState.filesDISK;
 
             if (files.length === 0) {
@@ -256,24 +268,104 @@
 
             files.forEach(f => {
                 const el = document.createElement('div');
-                el.className = "flex items-center gap-2 text-xs p-1.5 hover:bg-[#222] rounded cursor-default group";
+                el.className = "flex items-center gap-2 text-xs p-1.5 hover:bg-[#222] rounded cursor-pointer group select-none";
+                // Onclick open editor if it's text
+                el.onclick = () => openEditor(f);
+                
                 el.innerHTML = `
                     <i data-lucide="${f.name.endsWith('.jar') ? 'file-code' : 'file-text'}" class="w-3 h-3 text-zinc-500"></i>
                     <span class="text-zinc-300 flex-1 truncate">${f.name}</span>
-                    <span class="text-[9px] text-zinc-600">${f.size ? (f.size/1024).toFixed(0)+'kb' : ''}</span>
+                    <span class="text-[9px] text-zinc-600">${f.size ? (f.size < 1024 ? f.size+'B' : (f.size/1024).toFixed(0)+'kb') : ''}</span>
                 `;
                 container.appendChild(el);
             });
-            lucide.createIcons(); // Refresh icons
+            lucide.createIcons();
         }
 
-        // --- 3. INPUT HANDLING ---
+        // --- 3. EDITOR LOGIC ---
+        let currentEditingFile = null;
+
+        function openEditor(file) {
+            if (systemState.currentTab === 'ram' && file.name.endsWith('.jar')) {
+                window.sysLog("Cannot edit binary JAR files.");
+                return;
+            }
+
+            // Simple heuristic for editable files
+            if (file.name.endsWith('.txt') || file.name.endsWith('.properties') || file.name.endsWith('.json') || file.name.endsWith('.yml')) {
+                currentEditingFile = file;
+                const modal = document.getElementById('editor-overlay');
+                const title = document.getElementById('editor-title');
+                const textarea = document.getElementById('editor-content');
+
+                title.innerText = `Editing: /files/${file.name}`;
+                textarea.value = file.content || ""; // Load content from simulation
+                
+                modal.classList.remove('hidden');
+            } else {
+                window.sysLog(`Cannot edit ${file.name} (Unknown format or Binary).`);
+            }
+        }
+
+        function closeEditor() {
+            document.getElementById('editor-overlay').classList.add('hidden');
+            currentEditingFile = null;
+        }
+
+        function saveEditorContent() {
+            if (!currentEditingFile) return;
+            
+            const content = document.getElementById('editor-content').value;
+            currentEditingFile.content = content; // Update memory state
+            currentEditingFile.size = content.length;
+            
+            // Perform actual write if FS API exists
+            const path = "/files/" + currentEditingFile.name;
+            const writeFunc = typeof cheerpOSAddStringFile === 'function' ? cheerpOSAddStringFile : (typeof cheerpjAddStringFile === 'function' ? cheerpjAddStringFile : null);
+            
+            if (writeFunc) {
+                try {
+                    writeFunc(path, content);
+                    // Also mirror to /str/ just in case
+                    try { writeFunc("/str/" + currentEditingFile.name, content); } catch(e){}
+                    
+                    window.sysLog(`System: Saved ${path} (${content.length} bytes).`);
+                } catch(e) {
+                    window.sysLog("Error writing to FS: " + e.message);
+                }
+            } else {
+                window.sysLog("Warning: FS API unavailable. Changes saved to UI state only.");
+            }
+            
+            closeEditor();
+            renderFileList(); // Update size display
+        }
+
+        function addConfigFile() {
+            // Helper to quickly create standard files
+            const name = prompt("Enter filename (e.g. eula.txt):", "eula.txt");
+            if (!name) return;
+            
+            // Check if exists
+            if (systemState.filesDISK.find(f => f.name === name)) {
+                window.sysLog("File already exists.");
+                return;
+            }
+            
+            const newFile = {name: name, content: "", size: 0, type: 'text'};
+            systemState.filesDISK.push(newFile);
+            renderFileList();
+            openEditor(newFile);
+        }
+
+        // --- 4. CONTROLS & EXECUTION ---
+
         function handleInput(e) {
             if (e.key === 'Enter') {
                 const input = e.target.value;
                 if (!input.trim()) return;
                 
-                // Show in UI
+                // Show command in log immediately
                 const consoleDiv = document.getElementById('console');
                 const line = document.createElement('div');
                 line.className = `log-line log-input`;
@@ -282,14 +374,10 @@
                 consoleDiv.scrollTop = consoleDiv.scrollHeight;
                 
                 e.target.value = '';
-
-                // Logic: Since we can't easily pipe stdin to CheerpJ without
-                // using their specific Terminal Component, we log it here.
-                // In a future update, if CheerpJ exposes a standardInputStream, we'd write to it here.
+                // Placeholder for stdin pipe
             }
         }
 
-        // --- 4. RUN / STOP / RESTART ---
         async function runSequence() {
             if (systemState.power) return;
             
@@ -305,13 +393,11 @@
             document.getElementById('status-text').innerText = "BOOTING";
             document.getElementById('status-text').className = "text-xs font-bold text-yellow-500";
 
-            // Init JVM
             if (!systemState.jvmLoaded) {
                 window.sysLog("Bios: Initializing CheerpJ 4.2 Engine...");
                 window.sysLog("Bios: Mounting /files/ as Working Directory...");
                 
                 try {
-                    // Initialize with user.dir set to /files/ so the server saves data to disk
                     await cheerpjInit({ javaProperties: ["user.dir=/files/"] });
                     systemState.jvmLoaded = true;
                 } catch (e) {
@@ -332,7 +418,6 @@
 
         function stopSystem(reload = true) {
             if (reload) {
-                // Hard reset is the only way to cleanly kill WASM threads
                 if(confirm("Stopping the JVM requires a page reload. Continue?")) {
                     window.location.reload();
                 }
@@ -355,7 +440,6 @@
             const runBtn = document.getElementById('btn-run');
             const stopBtn = document.getElementById('btn-stop');
             const restartBtn = document.getElementById('btn-restart');
-
             runBtn.disabled = isRunning;
             stopBtn.disabled = !isRunning;
             restartBtn.disabled = !isRunning;
@@ -367,27 +451,19 @@
             }
         }
 
-        // --- 5. FILE UPLOAD & EXECUTION ---
-
-        function triggerUpload() {
-            document.getElementById('file-upload').click();
-        }
+        function triggerUpload() { document.getElementById('file-upload').click(); }
 
         document.getElementById('file-upload').addEventListener('change', (e) => {
             const file = e.target.files[0];
             if (!file) return;
-
             window.sysLog(`System: Reading ${file.name}...`);
-            
             const reader = new FileReader();
             reader.onload = function(evt) {
                 try {
                     systemState.jarData = new Uint8Array(evt.target.result);
                     systemState.jarName = file.name;
-                    
                     systemState.filesRAM.push({ name: file.name, size: file.size });
                     renderFileList();
-                    
                     window.sysLog(`System: ${file.name} loaded into RAM buffer.`);
                 } catch(err) {
                     console.error("Read Error: " + err.message);
@@ -403,38 +479,39 @@
 
             const rawArgs = document.getElementById('boot-args').value;
             const args = rawArgs.split(' ').filter(a => a.length > 0);
-            
-            // Write JAR to RAM (/str/)
-            // We use /str/ because uploading directly to /files/ via JS is unstable in some CheerpJ versions.
-            // The app (server) running inside can write to /files/ fine, but we inject the binary into /str/.
             const vfsPath = "/str/" + systemState.jarName;
+            
             window.sysLog(`System: Writing JAR to ${vfsPath}...`);
 
             try {
-                // Determine correct write function
                 const writeFunc = typeof cheerpOSAddStringFile === 'function' ? cheerpOSAddStringFile : (typeof cheerpjAddStringFile === 'function' ? cheerpjAddStringFile : null);
-                
                 if (writeFunc) {
                     writeFunc(vfsPath, systemState.jarData);
+                    
+                    // Pre-write config files from DISK tab to actual VFS
+                    // This ensures any edits made in the editor are applied before run
+                    systemState.filesDISK.forEach(f => {
+                         if (f.content) {
+                             try { writeFunc("/files/" + f.name, f.content); } catch(e){}
+                             // also write to /str/ just in case
+                             try { writeFunc("/str/" + f.name, f.content); } catch(e){}
+                         }
+                    });
+
                 } else {
                     throw new Error("Filesystem API missing");
                 }
-
-                // Force EULA
-                forceWriteEula(true);
 
                 window.sysLog(`System: Executing JAR...`);
                 window.sysLog(`Args: ${args.join(' ')}`);
                 console.log("----------------------------------------");
 
-                // Initialize Canvas
                 cheerpjCreateDisplay(800, 600);
                 setTimeout(() => {
                     const canvas = document.getElementById('cheerpjDisplay');
                     if(canvas) display.appendChild(canvas);
                 }, 100);
 
-                // RUN
                 await cheerpjRunJar(vfsPath, args);
 
             } catch (e) {
@@ -444,33 +521,29 @@
                 }
             }
         }
-
-        function forceWriteEula(silent = false) {
-            if (!silent) window.sysLog("System: Writing EULA=TRUE to filesystems...");
-            
-            const content = "eula=true";
-            // We write to multiple paths to ensure the server finds it regardless of where it looks
-            const paths = ["/str/eula.txt", "/eula.txt", "/files/eula.txt"];
-            
-            const writeFunc = typeof cheerpOSAddStringFile === 'function' ? cheerpOSAddStringFile : (typeof cheerpjAddStringFile === 'function' ? cheerpjAddStringFile : null);
-            
-            if (writeFunc) {
-                paths.forEach(p => {
-                    try { writeFunc(p, content); } catch(e) {}
-                });
-                
-                if (!silent) {
-                    window.sysLog("System: EULA updated.");
-                    // Update UI Disk Tab to show it exists
-                    if (!systemState.filesDISK.find(f => f.name === 'eula.txt')) {
-                        systemState.filesDISK.push({name: 'eula.txt', size: 9});
-                        renderFileList();
-                    }
-                }
+        
+        // Force EULA helper for the button
+        window.forceWriteEula = function() {
+            window.sysLog("System: Checking eula.txt...");
+            // Find or create eula.txt in simulation
+            let eula = systemState.filesDISK.find(f => f.name === 'eula.txt');
+            if (!eula) {
+                eula = {name: 'eula.txt', content: 'eula=true', size: 9, type: 'text'};
+                systemState.filesDISK.push(eula);
+            } else {
+                eula.content = 'eula=true';
             }
+            renderFileList();
+            
+            // Try actual write if API exists
+            const writeFunc = typeof cheerpOSAddStringFile === 'function' ? cheerpOSAddStringFile : (typeof cheerpjAddStringFile === 'function' ? cheerpjAddStringFile : null);
+            if (writeFunc) {
+                 try { writeFunc("/files/eula.txt", "eula=true"); } catch(e){}
+                 try { writeFunc("/str/eula.txt", "eula=true"); } catch(e){}
+            }
+            window.sysLog("System: Set eula=true.");
         }
 
-        // Init
         renderFileList();
     </script>
 </body>
