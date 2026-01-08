@@ -1,0 +1,266 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Java Runtime Environment (Web)</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- 
+      REQUIRED: This loads the WebAssembly JVM Engine. 
+      Without this, running a real .jar file in a browser is impossible.
+    -->
+    <script src="https://cjrtnc.leaningtech.com/3.0/loader.js"></script>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&display=swap');
+        
+        body { background: #000; font-family: 'JetBrains Mono', monospace; color: #ccc; overflow: hidden; }
+        
+        ::-webkit-scrollbar { width: 8px; }
+        ::-webkit-scrollbar-track { background: #111; }
+        ::-webkit-scrollbar-thumb { background: #333; }
+        ::-webkit-scrollbar-thumb:hover { background: #444; }
+
+        #console { height: 100%; overflow-y: auto; padding-bottom: 20px; font-size: 13px; }
+        .log-line { padding: 1px 16px; border-left: 2px solid transparent; white-space: pre-wrap; word-break: break-all; }
+        
+        .log-stdout { color: #ccc; }
+        .log-stderr { color: #f87171; } /* Red for Java Errors */
+        .log-sys { color: #60a5fa; }    /* Blue for System Messages */
+
+        .blink { animation: blinker 1s linear infinite; }
+        @keyframes blinker { 50% { opacity: 0; } }
+    </style>
+</head>
+<body class="flex flex-col h-screen">
+
+    <!-- Status Bar -->
+    <div class="bg-[#111] border-b border-[#333] h-12 flex items-center justify-between px-4 z-20">
+        <div class="flex items-center gap-4">
+            <div class="flex items-center gap-2">
+                <div id="led" class="w-3 h-3 rounded-full bg-zinc-800"></div>
+                <span id="status-text" class="text-xs font-bold text-zinc-500">SYSTEM HALTED</span>
+            </div>
+            <div class="h-4 w-px bg-[#333]"></div>
+            <div class="text-[10px] text-zinc-500">
+                JVM: <span id="jvm-status" class="text-red-500">UNLOADED</span>
+            </div>
+        </div>
+
+        <div class="flex items-center gap-3">
+            <input type="file" id="file-upload" accept=".jar" class="hidden" />
+            
+            <button id="btn-upload" onclick="triggerUpload()" class="hidden bg-blue-600 hover:bg-blue-500 text-white text-[10px] font-bold px-4 py-1.5 rounded uppercase">
+                Install server.jar
+            </button>
+            
+            <button id="btn-power" onclick="powerOn()" class="bg-zinc-700 hover:bg-zinc-600 text-white text-[10px] font-bold px-4 py-1.5 rounded uppercase">
+                Power On
+            </button>
+        </div>
+    </div>
+
+    <!-- Main View -->
+    <div class="flex-1 flex relative">
+        <!-- VFS Sidebar -->
+        <div class="w-64 bg-[#0a0a0a] border-r border-[#333] flex flex-col">
+            <div class="p-3 border-b border-[#333] text-[10px] font-bold text-zinc-500 uppercase">
+                /root/ (VFS)
+            </div>
+            <div id="file-list" class="flex-1 overflow-y-auto p-2 space-y-1">
+                <div class="text-zinc-700 text-xs italic p-2 text-center">Disk Empty</div>
+            </div>
+        </div>
+
+        <!-- Terminal -->
+        <div class="flex-1 bg-black flex flex-col">
+            <div id="console" class="flex-1 pt-2">
+                <!-- Logs go here -->
+            </div>
+            <div class="h-10 border-t border-[#333] flex items-center px-4 gap-2">
+                <span class="text-zinc-500">></span>
+                <input id="term-input" type="text" class="bg-transparent border-none outline-none flex-1 text-sm text-zinc-300" disabled placeholder="Terminal input...">
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // System State
+        let isPowerOn = false;
+        let jvmReady = false;
+        let jarUrl = null;
+        let jarName = null;
+        
+        // --- Virtual Filesystem Mock ---
+        // We track files here to show them in the UI, 
+        // but the real files live in CheerpJ's /str/ mount.
+        let vfsFiles = [];
+
+        // --- Logger ---
+        const consoleDiv = document.getElementById('console');
+        function log(msg, type = 'stdout') {
+            const line = document.createElement('div');
+            line.className = `log-line log-${type}`;
+            const time = new Date().toLocaleTimeString('en-GB', { hour12: false });
+            line.innerHTML = `<span class="opacity-30 mr-2">[${time}]</span>${msg}`;
+            consoleDiv.appendChild(line);
+            consoleDiv.scrollTop = consoleDiv.scrollHeight;
+        }
+
+        // Hijack console to catch JVM output
+        const originalLog = console.log;
+        const originalErr = console.error;
+        console.log = function(...args) {
+            originalLog.apply(console, args);
+            // Filter CheerpJ internal messages vs Real Java Output
+            const str = args.join(' ');
+            log(str, 'stdout'); 
+        };
+        console.error = function(...args) {
+            originalErr.apply(console, args);
+            log(args.join(' '), 'stderr');
+        };
+
+        // --- System Logic ---
+
+        async function powerOn() {
+            if (isPowerOn) return;
+            isPowerOn = true;
+            
+            const btn = document.getElementById('btn-power');
+            btn.disabled = true;
+            btn.innerText = "BOOTING...";
+            
+            document.getElementById('led').className = "w-3 h-3 rounded-full bg-yellow-500 shadow-[0_0_8px_#eab308]";
+            document.getElementById('status-text').innerText = "BIOS POST...";
+            document.getElementById('status-text').className = "text-xs font-bold text-yellow-500";
+
+            log("Bios: Checking hardware...", "sys");
+            
+            // Check for Engine
+            if (typeof cheerpjInit === 'undefined') {
+                log("CRITICAL ERROR: JVM Engine (loader.js) missing.", "stderr");
+                log("Network connection to LeaningTech required for WebAssembly.", "stderr");
+                systemHalt("JVM_MISSING");
+                return;
+            }
+
+            log("Bios: Initializing WebAssembly JVM...", "sys");
+            document.getElementById('jvm-status').innerText = "LOADING...";
+            
+            try {
+                // Initialize Real CheerpJ
+                await cheerpjInit({ 
+                    enableNetwork: true,
+                    javaProperties: ["java.awt.headless=true"]
+                });
+                
+                jvmReady = true;
+                document.getElementById('jvm-status').innerText = "ONLINE";
+                document.getElementById('jvm-status').className = "text-emerald-500";
+                log("Bios: JVM initialized successfully.", "sys");
+                
+                checkDisk();
+
+            } catch (e) {
+                log(`Bios Error: ${e.message}`, "stderr");
+                systemHalt("BOOT_FAIL");
+            }
+        }
+
+        function checkDisk() {
+            log("Bios: Scanning /root/ for bootable media...", "sys");
+            
+            if (!jarUrl) {
+                log("Boot Error: No 'server.jar' found on disk.", "stderr");
+                log("Action: Please install server software manually.", "sys");
+                
+                document.getElementById('status-text').innerText = "NO BOOT MEDIA";
+                document.getElementById('status-text').className = "text-xs font-bold text-red-500";
+                document.getElementById('led').className = "w-3 h-3 rounded-full bg-red-500 blink";
+                
+                document.getElementById('btn-upload').classList.remove('hidden');
+                document.getElementById('btn-power').classList.add('hidden');
+            } else {
+                runJar();
+            }
+        }
+
+        // --- Upload Logic ---
+        function triggerUpload() {
+            document.getElementById('file-upload').click();
+        }
+
+        document.getElementById('file-upload').addEventListener('change', (e) => {
+            const file = e.target.files[0];
+            if (!file) return;
+
+            log(`System: Reading ${file.name} (${(file.size/1024/1024).toFixed(2)} MB)...`, "sys");
+            
+            jarUrl = URL.createObjectURL(file);
+            jarName = file.name;
+            vfsFiles.push({ name: jarName, size: file.size });
+            
+            updateVfsUI();
+            log("System: Install complete.", "sys");
+            
+            // Auto-start after upload
+            document.getElementById('btn-upload').classList.add('hidden');
+            runJar();
+        });
+
+        // --- Execution Logic ---
+        async function runJar() {
+            document.getElementById('status-text').innerText = "RUNNING";
+            document.getElementById('status-text').className = "text-xs font-bold text-emerald-500";
+            document.getElementById('led').className = "w-3 h-3 rounded-full bg-emerald-500 shadow-[0_0_8px_#10b981]";
+            
+            // Prepare default configs if missing
+            // This writes to the JVM's virtual memory
+            if(typeof cheerpOSAddStringFile === 'function') {
+                log("System: Writing default eula.txt=true", "sys");
+                cheerpOSAddStringFile("/str/eula.txt", "eula=true");
+                
+                // Add to our UI tracker
+                if(!vfsFiles.find(f => f.name === 'eula.txt')) vfsFiles.push({name: 'eula.txt', size: 9});
+                updateVfsUI();
+            }
+
+            log(`System: Executing ${jarName}...`, "sys");
+            log("----------------------------------------", "stdout");
+
+            try {
+                // THE REAL CALL: Passes the Blob URL to the WASM Runtime
+                // Path must be /str/ to use the persistent IndexedDB mount
+                await cheerpjRunJar(jarUrl, "/str/");
+            } catch (e) {
+                log(`Runtime Crash: ${e.message}`, "stderr");
+                systemHalt("RUNTIME_ERR");
+            }
+        }
+
+        // --- Helpers ---
+        function systemHalt(code) {
+            isPowerOn = false;
+            document.getElementById('status-text').innerText = code;
+            document.getElementById('status-text').className = "text-xs font-bold text-red-500";
+            document.getElementById('led').className = "w-3 h-3 rounded-full bg-red-500";
+            document.getElementById('btn-power').disabled = false;
+            document.getElementById('btn-power').innerText = "POWER ON";
+        }
+
+        function updateVfsUI() {
+            const list = document.getElementById('file-list');
+            list.innerHTML = '';
+            vfsFiles.forEach(f => {
+                const div = document.createElement('div');
+                div.className = "flex items-center gap-2 text-xs p-1 hover:bg-[#222] cursor-default";
+                div.innerHTML = `
+                    <span class="text-zinc-500">📄</span>
+                    <span class="text-zinc-300">${f.name}</span>
+                `;
+                list.appendChild(div);
+            });
+        }
+    </script>
+</body>
+</html>
