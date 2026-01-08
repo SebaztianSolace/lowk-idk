@@ -57,9 +57,6 @@
             background: rgba(0,0,0,0.8);
             backdrop-filter: blur(4px);
         }
-        
-        .blink { animation: blinker 1s linear infinite; }
-        @keyframes blinker { 50% { opacity: 0; } }
     </style>
 </head>
 <body class="flex flex-col h-screen select-none">
@@ -140,7 +137,7 @@
             
             <!-- Disk Info Footer -->
             <div class="p-2 border-t border-[#333] bg-[#050505] text-[10px] text-zinc-600">
-                <div id="fs-info">RAM: Executable Storage</div>
+                <div id="fs-info">Mode: Upload</div>
             </div>
         </div>
 
@@ -159,9 +156,7 @@
             <div id="console" class="flex-1 pt-2 border-t border-[#333] font-mono">
                 <div class="px-4 py-2 text-zinc-500 text-xs select-text">
                     [System] Java Runtime Environment Ready.<br>
-                    [System] 1. Upload .jar to RAM.<br>
-                    [System] 2. Edit Configs (eula.txt) in Config tab.<br>
-                    [System] 3. Click RUN to boot into /files/ (Persistent Mode).<br>
+                    [System] Note: Using BinaryString reader for reliable JAR mounting.<br>
                 </div>
             </div>
 
@@ -190,7 +185,7 @@
     </div>
 
     <script>
-        // --- 1. CONSOLE PROXY (Safe Logging) ---
+        // --- 1. CONSOLE PROXY ---
         (function() {
             const originalLog = console.log;
             const originalErr = console.error;
@@ -221,10 +216,9 @@
             power: false,
             jvmLoaded: false,
             jarName: null,
-            jarData: null,
+            jarData: null, // Binary String
             currentTab: 'ram',
             filesRAM: [],
-            // These files will be written to /files/ AFTER init
             filesDISK: [
                 {name: 'eula.txt', content: 'eula=true', size: 9, type: 'text'},
                 {name: 'server.properties', content: 'server-port=25565\nonline-mode=false', size: 35, type: 'text'}
@@ -235,7 +229,7 @@
             systemState.currentTab = tab;
             document.getElementById('tab-ram').className = `flex-1 py-2 text-[10px] font-bold text-center transition-colors ${tab === 'ram' ? 'tab-active' : 'tab-inactive'}`;
             document.getElementById('tab-disk').className = `flex-1 py-2 text-[10px] font-bold text-center transition-colors ${tab === 'disk' ? 'tab-active' : 'tab-inactive'}`;
-            document.getElementById('fs-info').innerText = tab === 'ram' ? "RAM: Executable Storage" : "DISK: Persistent Config Queue";
+            document.getElementById('fs-info').innerText = tab === 'ram' ? "Mode: Upload JAR" : "Mode: Config (/files/)";
             renderFileList();
         }
 
@@ -271,15 +265,11 @@
                 window.sysLog("Cannot edit binary JAR files.");
                 return;
             }
-            if (file.name.endsWith('.txt') || file.name.endsWith('.properties') || file.name.endsWith('.json') || file.name.endsWith('.yml')) {
-                currentEditingFile = file;
-                const modal = document.getElementById('editor-overlay');
-                document.getElementById('editor-title').innerText = `Editing: ${file.name}`;
-                document.getElementById('editor-content').value = file.content || "";
-                modal.classList.remove('hidden');
-            } else {
-                window.sysLog(`Cannot edit ${file.name}.`);
-            }
+            currentEditingFile = file;
+            const modal = document.getElementById('editor-overlay');
+            document.getElementById('editor-title').innerText = `Editing: ${file.name}`;
+            document.getElementById('editor-content').value = file.content || "";
+            modal.classList.remove('hidden');
         }
 
         function closeEditor() {
@@ -293,19 +283,18 @@
             currentEditingFile.content = content;
             currentEditingFile.size = content.length;
             
-            // IF JVM is already online, write immediately.
-            // IF JVM is offline, just save to array (Queue) and it will write on boot.
+            // If online, write to /files/ immediately
             if (systemState.jvmLoaded) {
                 const path = "/files/" + currentEditingFile.name;
                 const writeFunc = typeof cheerpOSAddStringFile === 'function' ? cheerpOSAddStringFile : null;
                 if (writeFunc) {
                     try {
                         writeFunc(path, content);
-                        window.sysLog(`System: Hot-swapped ${path} (Saved to DISK).`);
+                        window.sysLog(`System: Updated ${path}.`);
                     } catch(e) { window.sysLog("Write Error: " + e.message); }
                 }
             } else {
-                window.sysLog(`System: Queued ${currentEditingFile.name} for write on Boot.`);
+                window.sysLog(`System: Queued ${currentEditingFile.name} for Boot.`);
             }
             
             closeEditor();
@@ -324,18 +313,12 @@
             openEditor(newFile);
         }
 
-        // --- 4. CONTROLS & EXECUTION ---
-
+        // --- 4. EXECUTION ---
         function handleInput(e) {
             if (e.key === 'Enter') {
                 const input = e.target.value;
                 if (!input.trim()) return;
-                const consoleDiv = document.getElementById('console');
-                const line = document.createElement('div');
-                line.className = `log-line log-input`;
-                line.innerText = `> ${input}`;
-                consoleDiv.appendChild(line);
-                consoleDiv.scrollTop = consoleDiv.scrollHeight;
+                window.sysLog(`> ${input}`);
                 e.target.value = '';
             }
         }
@@ -344,7 +327,7 @@
             if (systemState.power) return;
             
             if (!systemState.jarData) {
-                window.sysLog("Error: No JAR loaded in RAM. Please upload one first.");
+                window.sysLog("Error: No JAR loaded. Please upload one first.");
                 return;
             }
 
@@ -355,13 +338,11 @@
             document.getElementById('status-text').innerText = "BOOTING";
             document.getElementById('status-text').className = "text-xs font-bold text-yellow-500";
 
-            // 1. INITIALIZE JVM (Mounts /files/)
+            // 1. INIT
             if (!systemState.jvmLoaded) {
-                window.sysLog("Bios: Initializing CheerpJ 4.2 Engine...");
-                window.sysLog("Bios: Mounting /files/ as Working Directory (Persistent)...");
-                
+                window.sysLog("Bios: Initializing Engine...");
+                window.sysLog("Bios: Mounting /files/ as Working Directory...");
                 try {
-                    // Set working directory to /files/ so server writes logs/worlds there
                     await cheerpjInit({ javaProperties: ["user.dir=/files/"] });
                     systemState.jvmLoaded = true;
                 } catch (e) {
@@ -371,23 +352,31 @@
                 }
             }
 
-            // 2. FLUSH CONFIG QUEUE TO DISK
-            window.sysLog("Bios: Flushing config files to /files/...");
             const writeFunc = typeof cheerpOSAddStringFile === 'function' ? cheerpOSAddStringFile : (typeof cheerpjAddStringFile === 'function' ? cheerpjAddStringFile : null);
+            if (!writeFunc) { window.sysLog("Error: FS API missing."); return; }
+
+            // 2. WRITE CONFIGS TO /files/
+            window.sysLog("Bios: Writing configs to /files/...");
+            systemState.filesDISK.forEach(f => {
+                if (f.content) {
+                    try { writeFunc("/files/" + f.name, f.content); } catch(e){}
+                }
+            });
+
+            // 3. WRITE JAR TO /files/
+            // NOTE: Using /files/ path for the JAR itself too, as requested
+            const vfsPath = "/files/" + systemState.jarName;
+            window.sysLog(`Bios: Writing JAR to ${vfsPath} (This may take a moment)...`);
             
-            if (writeFunc) {
-                systemState.filesDISK.forEach(f => {
-                    if (f.content) {
-                        try {
-                            // THIS IS THE FIX: We write to /files/ AFTER init
-                            writeFunc("/files/" + f.name, f.content);
-                            // Also write to /str/ just in case server checks there
-                            try { writeFunc("/str/" + f.name, f.content); } catch(e){}
-                        } catch(e) {
-                            window.sysLog(`Failed to write ${f.name}: ${e.message}`);
-                        }
-                    }
-                });
+            try {
+                // writeFunc expects a STRING. jarData is now a Binary String.
+                writeFunc(vfsPath, systemState.jarData);
+                window.sysLog("Bios: JAR Mounted successfully.");
+            } catch(e) {
+                console.error("FS Write Error: " + e.message);
+                window.sysLog("Critical: Failed to mount JAR to VFS.");
+                stopSystem(false);
+                return;
             }
 
             document.getElementById('led').className = "w-3 h-3 rounded-full bg-emerald-500 shadow-[0_0_8px_#10b981]";
@@ -396,13 +385,39 @@
             document.getElementById('term-input').disabled = false;
             document.getElementById('term-input').focus();
 
-            await executeJar();
+            await executeJar(vfsPath);
+        }
+
+        async function executeJar(vfsPath) {
+            const display = document.getElementById('display-container');
+            display.style.display = 'flex';
+            display.style.height = '60%'; 
+
+            const rawArgs = document.getElementById('boot-args').value;
+            const args = rawArgs.split(' ').filter(a => a.length > 0);
+
+            window.sysLog(`System: Executing ${vfsPath}...`);
+            console.log("----------------------------------------");
+
+            cheerpjCreateDisplay(800, 600);
+            setTimeout(() => {
+                const canvas = document.getElementById('cheerpjDisplay');
+                if(canvas) display.appendChild(canvas);
+            }, 100);
+
+            try {
+                await cheerpjRunJar(vfsPath, args);
+            } catch (e) {
+                console.error(`Runtime Exception: ${e.message}`);
+                if(e.message.includes('pwrite')) {
+                    window.sysLog("Error: Browser lacks support for this JAR's patching (pwrite). Use Vanilla JARs.");
+                }
+            }
         }
 
         function stopSystem(reload = true) {
-            if (reload) {
-                if(confirm("Stopping the JVM requires a page reload. Continue?")) window.location.reload();
-            } else {
+            if (reload) { if(confirm("Reload page to stop?")) window.location.reload(); }
+            else {
                 systemState.power = false;
                 updateControls(false);
                 document.getElementById('led').className = "w-3 h-3 rounded-full bg-red-500 shadow-[0_0_8px_#ef4444]";
@@ -411,21 +426,16 @@
             }
         }
 
-        function restartSystem() {
-            if(confirm("Restarting will reload the page. Continue?")) window.location.reload();
-        }
+        function restartSystem() { if(confirm("Restart?")) window.location.reload(); }
 
         function updateControls(isRunning) {
-            const runBtn = document.getElementById('btn-run');
-            const stopBtn = document.getElementById('btn-stop');
-            const restartBtn = document.getElementById('btn-restart');
-            runBtn.disabled = isRunning;
-            stopBtn.disabled = !isRunning;
-            restartBtn.disabled = !isRunning;
+            document.getElementById('btn-run').disabled = isRunning;
+            document.getElementById('btn-stop').disabled = !isRunning;
+            document.getElementById('btn-restart').disabled = !isRunning;
             if (isRunning) {
-                runBtn.classList.add('opacity-50', 'cursor-not-allowed');
-                stopBtn.classList.remove('opacity-50', 'cursor-not-allowed');
-                restartBtn.classList.remove('opacity-50', 'cursor-not-allowed');
+                document.getElementById('btn-run').classList.add('opacity-50', 'cursor-not-allowed');
+                document.getElementById('btn-stop').classList.remove('opacity-50', 'cursor-not-allowed');
+                document.getElementById('btn-restart').classList.remove('opacity-50', 'cursor-not-allowed');
             }
         }
 
@@ -435,58 +445,24 @@
             const file = e.target.files[0];
             if (!file) return;
             window.sysLog(`System: Reading ${file.name}...`);
+            
             const reader = new FileReader();
+            // CRITICAL FIX: Read as BinaryString to satisfy cheerpOSAddStringFile
+            reader.readAsBinaryString(file);
+            
             reader.onload = function(evt) {
                 try {
-                    systemState.jarData = new Uint8Array(evt.target.result);
+                    systemState.jarData = evt.target.result; // Binary String
                     systemState.jarName = file.name;
                     systemState.filesRAM.push({ name: file.name, size: file.size });
                     renderFileList();
-                    window.sysLog(`System: ${file.name} buffered in memory.`);
+                    window.sysLog(`System: ${file.name} buffered. Ready to Run.`);
                 } catch(err) {
                     console.error("Read Error: " + err.message);
                 }
             };
-            reader.readAsArrayBuffer(file);
         });
 
-        async function executeJar() {
-            const display = document.getElementById('display-container');
-            display.style.display = 'flex';
-            display.style.height = '60%'; 
-
-            const rawArgs = document.getElementById('boot-args').value;
-            const args = rawArgs.split(' ').filter(a => a.length > 0);
-            
-            // Write JAR to RAM (/str/) for execution
-            const vfsPath = "/str/" + systemState.jarName;
-            window.sysLog(`System: Mounting Executable to ${vfsPath}...`);
-
-            try {
-                const writeFunc = typeof cheerpOSAddStringFile === 'function' ? cheerpOSAddStringFile : (typeof cheerpjAddStringFile === 'function' ? cheerpjAddStringFile : null);
-                if (writeFunc) {
-                    writeFunc(vfsPath, systemState.jarData);
-                } else {
-                    throw new Error("Filesystem API missing");
-                }
-
-                window.sysLog(`System: Executing JAR...`);
-                window.sysLog(`Args: ${args.join(' ')}`);
-                console.log("----------------------------------------");
-
-                cheerpjCreateDisplay(800, 600);
-                setTimeout(() => {
-                    const canvas = document.getElementById('cheerpjDisplay');
-                    if(canvas) display.appendChild(canvas);
-                }, 100);
-
-                await cheerpjRunJar(vfsPath, args);
-
-            } catch (e) {
-                console.error(`Runtime Exception: ${e.message}`);
-            }
-        }
-        
         renderFileList();
     </script>
 </body>
